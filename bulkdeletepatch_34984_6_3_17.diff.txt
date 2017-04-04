@@ -1,0 +1,585 @@
+diff --git a/mod/quiz/classes/output/edit_renderer.php b/mod/quiz/classes/output/edit_renderer.php
+index 8f1f01476a5..7913e1f4566 100644
+--- a/mod/quiz/classes/output/edit_renderer.php
++++ b/mod/quiz/classes/output/edit_renderer.php
+@@ -62,11 +62,23 @@ class edit_renderer extends \plugin_renderer_base {
+         $output .= $this->quiz_information($structure);
+         $output .= $this->maximum_grade_input($structure, $pageurl);
+         $output .= $this->repaginate_button($structure, $pageurl);
++        $output .= $this->selectmultiple_button($structure);
+         $output .= $this->total_marks($quizobj->get_quiz());
+ 
+         // Show the questions organised into sections and pages.
+         $output .= $this->start_section_list($structure);
+ 
++        // Bulk action button delete and bulk action button cancel.
++        $output .= html_writer::tag('div', html_writer::empty_tag('input', array('type' => 'button',
++                'id' => 'selectmultipledeletecommand', 'value' => get_string('deleteselected', 'mod_quiz'))) . " " .
++                html_writer::empty_tag('input', array('type' => 'button', 'id' => 'selectmultiplecancelcommand',
++                'value' => get_string('cancel', 'moodle'))), array('class' => 'selectmultiplecommand actions'));
++
++        // Select all/deselect all questions.
++        $output .= html_writer::tag('div', html_writer::link('#', get_string('selectall', 'quiz'),
++                array('id' => 'questionselectall')) . " / " . html_writer::link('#', get_string('selectnone', 'quiz'),
++                array('id' => 'questiondeselectall')), array('class' => 'selectmultiplecommandbuttons'));
++
+         foreach ($structure->get_sections() as $section) {
+             $output .= $this->start_section($structure, $section);
+             $output .= $this->questions_in_section($structure, $section, $contexts, $pagevars, $pageurl);
+@@ -207,8 +219,27 @@ class edit_renderer extends \plugin_renderer_base {
+             $this->page->requires->yui_module('moodle-mod_quiz-repaginate', 'M.mod_quiz.repaginate.init');
+         }
+ 
+-        return html_writer::tag('div',
+-                html_writer::empty_tag('input', $buttonoptions), $containeroptions);
++        return html_writer::start_tag('div', $containeroptions) .
++                html_writer::empty_tag('input', $buttonoptions);
++    }
++
++    /**
++     * Generate the bulk action button
++     * @param structure $structure the structure of the quiz being edited.
++     * @return string HTML to output.
++     */
++    protected function selectmultiple_button(structure $structure) {
++        $buttonoptions = array(
++            'type'  => 'button',
++            'name'  => 'selectmultiple',
++            'id'    => 'selectmultiplecommand',
++            'value' => get_string('selectmultipleitems', 'quiz'),
++            'class' => 'btn btn-secondary m-b-1'
++        );
++        if (!$structure->can_be_edited()) {
++            $buttonoptions['disabled'] = 'disabled';
++        }
++        return html_writer::empty_tag('input', $buttonoptions) . html_writer::end_tag('div');
+     }
+ 
+     /**
+@@ -640,6 +671,10 @@ class edit_renderer extends \plugin_renderer_base {
+         }
+ 
+         $output .= html_writer::start_div('mod-indent-outer');
++        $output .= html_writer::tag('input', '', array('id' => 'selectquestion-' .
++                $structure->get_displayed_number_for_slot($slot), 'name' => 'selectquestion[]',
++               'type' => 'checkbox', 'class' => 'select-multiple-checkbox',
++               'value' => $structure->get_displayed_number_for_slot($slot)));
+         $output .= $this->question_number($structure->get_displayed_number_for_slot($slot));
+ 
+         // This div is used to indent the content.
+@@ -1026,6 +1061,7 @@ class edit_renderer extends \plugin_renderer_base {
+         unset($config->pagehtml);
+         unset($config->addpageiconhtml);
+ 
++        $this->page->requires->strings_for_js(array('areyousureremoveselected'), 'quiz');
+         $this->page->requires->yui_module('moodle-mod_quiz-toolboxes',
+                 'M.mod_quiz.init_section_toolbox',
+                 array(array(
+diff --git a/mod/quiz/edit_rest.php b/mod/quiz/edit_rest.php
+index 6ad7fc21a3d..c8d76f046c5 100644
+--- a/mod/quiz/edit_rest.php
++++ b/mod/quiz/edit_rest.php
+@@ -47,6 +47,7 @@ $maxmark    = optional_param('maxmark', '', PARAM_FLOAT);
+ $newheading = optional_param('newheading', '', PARAM_TEXT);
+ $shuffle    = optional_param('newshuffle', 0, PARAM_INT);
+ $page       = optional_param('page', '', PARAM_INT);
++$ids        = optional_param('ids', '', PARAM_SEQUENCE);
+ $PAGE->set_url('/mod/quiz/edit-rest.php',
+         array('quizid' => $quizid, 'class' => $class));
+ 
+@@ -144,6 +145,24 @@ switch($requestmethod) {
+                         echo json_encode(array('slots' => $json));
+                         break;
+ 
++                    case 'deletemultiple':
++                        require_capability('mod/quiz:manage', $modcontext);
++
++                        $ids = explode(',', $ids);
++                        foreach ($ids as $id) {
++                            $slot = $DB->get_record('quiz_slots', array('quizid' => $quiz->id, 'id' => $id).
++                                    '*', MUST_EXIST);
++                            if (quiz_has_question_use($quiz, $slot->slot)) {
++                                $structure->remove_slot($slot->slot);
++                            }
++                        }
++                        quiz_delete_previews($quiz);
++                        quiz_update_sumgrades($quiz);
++
++                        echo json_encode(array('newsummarks' => quiz_format_grade($quiz, $quiz->sumgrades),
++                                'deleted' => true, 'newnumquestions' => $structure->get_question_count()));
++                        break;
++
+                     case 'updatedependency':
+                         require_capability('mod/quiz:manage', $modcontext);
+                         $slot = $structure->get_slot_by_id($id);
+diff --git a/mod/quiz/lang/en/quiz.php b/mod/quiz/lang/en/quiz.php
+index d3608845a05..25ec6d0bdfd 100644
+--- a/mod/quiz/lang/en/quiz.php
++++ b/mod/quiz/lang/en/quiz.php
+@@ -816,6 +816,7 @@ $string['select'] = 'Select';
+ $string['selectall'] = 'Select all';
+ $string['selectcategory'] = 'Select category';
+ $string['selectedattempts'] = 'Selected attempts...';
++$string['selectmultipleitems'] = 'Select multiple items';
+ $string['selectnone'] = 'Deselect all';
+ $string['selectquestiontype'] = '-- Select question type --';
+ $string['serveradded'] = 'Server added';
+diff --git a/mod/quiz/styles.css b/mod/quiz/styles.css
+index 5395348da51..eeb5cae486a 100644
+--- a/mod/quiz/styles.css
++++ b/mod/quiz/styles.css
+@@ -879,10 +879,6 @@ table.quizreviewsummary td.cell {
+     width: 100%;
+ }
+ 
+-#page-mod-quiz-edit ul.slots li.section li.activity .mod-indent-outer {
+-    padding-left: 22px;
+-}
+-
+ #page-mod-quiz-edit ul.slots .activityinstance form {
+     display: inline;
+ }
+@@ -1117,6 +1113,68 @@ table#categoryquestions {
+     background-color: #fff;
+ }
+ 
++/* Bulk edit actions */
++
++.selectmultiplecommandbuttons {
++    margin: 0.6em 0.4em;
++}
++
++.selectmultiplecommand,
++.selectmultiplecommandbuttons,
++.select-multiple-checkbox {
++    display: none;
++}
++
++#page-mod-quiz-edit.select-multiple .selectmultiplecommand,
++#page-mod-quiz-edit.select-multiple .selectmultiplecommandbuttons,
++#page-mod-quiz-edit.select-multiple .select-multiple-checkbox {
++    display: inherit;
++}
++
++#page-mod-quiz-edit.select-multiple input.select-multiple-checkbox[type="checkbox"] {
++    display: inline;
++}
++
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section .activity .editing_move,
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section .activity .commands {
++    display: none;
++}
++
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section .page_split_join_wrapper {
++    display: none;
++}
++
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section .activity .actions .editing_delete,
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section .activity .actions .editing_maxmark {
++    display: none;
++}
++
++#page-mod-quiz-edit.select-multiple#page-mod-quiz-edit .maxgrade,
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .last-add-menu {
++    display: none;
++}
++
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section-heading,
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section-heading form,
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section-heading .instancesectioncontainer,
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section-heading .instanceshufflequestions,
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .section-heading .instancesectioncontainer h3 {
++    display: none;
++}
++
++#page-mod-quiz-edit.select-multiple .mod-quiz-edit-content .rpcontainerclass {
++    display: none;
++}
++
++#page-mod-quiz-edit.select-multiple#page-mod-quiz-edit ul.slots li.section li.activity .mod-indent-outer {
++    padding-left: 3px;
++}
++
++.section .summary .iconsmall,
++.section .activity .iconsmall {
++    float: left;
++}
++
+ /* Base theme needs extra support. */
+ #page-mod-quiz-edit ul.slots li.section ul.section {
+     list-style: none;
+diff --git a/mod/quiz/tests/behat/editing_remove_multiple_questions.feature b/mod/quiz/tests/behat/editing_remove_multiple_questions.feature
+new file mode 100644
+index 00000000000..961f10699b3
+--- /dev/null
++++ b/mod/quiz/tests/behat/editing_remove_multiple_questions.feature
+@@ -0,0 +1,170 @@
++@mod @mod_quiz
++Feature: Edit quiz page - remove multiple questions
++  In order to change the layout of a quiz I built efficiently
++  As a teacher
++  I need to be able to delete many questions questions.
++
++  Background:
++    Given the following "users" exist:
++      | username | firstname | lastname | email                |
++      | teacher1 | T1        | Teacher1 | teacher1@example.com |
++    And the following "courses" exist:
++      | fullname | shortname | category |
++      | Course 1 | C1        | 0        |
++    And the following "course enrolments" exist:
++      | user     | course | role           |
++      | teacher1 | C1     | editingteacher |
++    And the following "question categories" exist:
++      | contextlevel | reference | name           |
++      | Course       | C1        | Test questions |
++    And the following "activities" exist:
++      | activity   | name   | course | idnumber |
++      | quiz       | Quiz 1 | C1     | quiz1    |
++    And I log in as "teacher1"
++    And I follow "Course 1"
++    And I follow "Quiz 1"
++
++  @javascript
++  Scenario: Delete selected question using select multiple items feature.
++    Given the following "questions" exist:
++      | questioncategory | qtype     | name       | questiontext        |
++      | Test questions   | truefalse | Question A | This is question 01 |
++      | Test questions   | truefalse | Question B | This is question 02 |
++      | Test questions   | truefalse | Question C | This is question 03 |
++    And quiz "Quiz 1" contains the following questions:
++      | question   | page |
++      | Question A | 1    |
++      | Question B | 1    |
++      | Question C | 2    |
++    And I navigate to "Edit quiz" in current page administration
++
++    # Confirm the starting point.
++    Then I should see "Question A" on quiz page "1"
++    And I should see "Question B" on quiz page "1"
++    And I should see "Question C" on quiz page "2"
++    And I should see "Total of marks: 3.00"
++    And I should see "Questions: 3"
++    And I should see "This quiz is open"
++
++    # Delete last question in last page. Page contains multiple questions. No reordering.
++    When I click on "Select multiple items" "button"
++    Then I click on "selectquestion-3" "checkbox"
++    And I click on "Delete selected" "button"
++    And I click on "Yes" "button" in the "Confirm" "dialogue"
++
++    Then I should see "Question A" on quiz page "1"
++    And I should see "Question B" on quiz page "1"
++    And I should not see "Question C" on quiz page "2"
++    And I should see "Total of marks: 2.00"
++    And I should see "Questions: 2"
++
++  @javascript
++  Scenario: Delete first selected question using select multiple items feature.
++    Given the following "questions" exist:
++      | questioncategory | qtype     | name       | questiontext        |
++      | Test questions   | truefalse | Question A | This is question 01 |
++      | Test questions   | truefalse | Question B | This is question 02 |
++      | Test questions   | truefalse | Question C | This is question 03 |
++    And quiz "Quiz 1" contains the following questions:
++      | question   | page |
++      | Question A | 1    |
++      | Question B | 2    |
++      | Question C | 2    |
++    And I navigate to "Edit quiz" in current page administration
++
++  # Confirm the starting point.
++    Then I should see "Question A" on quiz page "1"
++    And I should see "Question B" on quiz page "2"
++    And I should see "Question C" on quiz page "2"
++    And I should see "Total of marks: 3.00"
++    And I should see "Questions: 3"
++    And I should see "This quiz is open"
++
++  # Delete first question in first page. Page contains multiple questions. No reordering.
++    When I click on "Select multiple items" "button"
++    Then I click on "selectquestion-1" "checkbox"
++    And I click on "Delete selected" "button"
++    And I click on "Yes" "button" in the "Confirm" "dialogue"
++
++    Then I should not see "Question A" on quiz page "1"
++    And I should see "Question B" on quiz page "1"
++    And I should see "Question C" on quiz page "1"
++    And I should see "Total of marks: 2.00"
++    And I should see "Questions: 2"
++
++  @javascript
++  Scenario: Can delete the last question in a quiz.
++    Given the following "questions" exist:
++      | questioncategory | qtype     | name       | questiontext        |
++      | Test questions   | truefalse | Question A | This is question 01 |
++    And quiz "Quiz 1" contains the following questions:
++      | question   | page |
++      | Question A | 1    |
++    When I navigate to "Edit quiz" in current page administration
++    And I click on "Select multiple items" "button"
++    And I click on "selectquestion-1" "checkbox"
++    And I click on "Delete selected" "button"
++    And I click on "Yes" "button" in the "Confirm" "dialogue"
++    Then I should see "Questions: 0"
++
++  @javascript
++  Scenario: Delete all questions by checking select all.
++    Given the following "questions" exist:
++      | questioncategory | qtype     | name       | questiontext        |
++      | Test questions   | truefalse | Question A | This is question 01 |
++      | Test questions   | truefalse | Question B | This is question 02 |
++      | Test questions   | truefalse | Question C | This is question 03 |
++    And quiz "Quiz 1" contains the following questions:
++      | question   | page |
++      | Question A | 1    |
++      | Question B | 1    |
++      | Question C | 2    |
++    And I navigate to "Edit quiz" in current page administration
++
++  # Confirm the starting point.
++    Then I should see "Question A" on quiz page "1"
++    And I should see "Question B" on quiz page "1"
++    And I should see "Question C" on quiz page "2"
++    And I should see "Total of marks: 3.00"
++    And I should see "Questions: 3"
++    And I should see "This quiz is open"
++
++  # Delete all questions in page. Page contains multiple questions
++    When I click on "Select multiple items" "button"
++    Then I click on "Select all" "link"
++    And I click on "Delete selected" "button"
++    And I click on "Yes" "button" in the "Confirm" "dialogue"
++
++    Then I should not see "Question A" on quiz page "1"
++    And I should not see "Question B" on quiz page "1"
++    And I should not see "Question C" on quiz page "2"
++    And I should see "Total of marks: 0.00"
++    And I should see "Questions: 0"
++
++  @javascript
++  Scenario: Deselect all questions by checking deselect all.
++    Given the following "questions" exist:
++      | questioncategory | qtype     | name       | questiontext        |
++      | Test questions   | truefalse | Question A | This is question 01 |
++      | Test questions   | truefalse | Question B | This is question 02 |
++      | Test questions   | truefalse | Question C | This is question 03 |
++    And quiz "Quiz 1" contains the following questions:
++      | question   | page |
++      | Question A | 1    |
++      | Question B | 1    |
++      | Question C | 2    |
++    And I navigate to "Edit quiz" in current page administration
++
++  # Confirm the starting point.
++    Then I should see "Question A" on quiz page "1"
++    And I should see "Question B" on quiz page "1"
++    And I should see "Question C" on quiz page "2"
++
++  # Delete last question in last page. Page contains multiple questions
++    When I click on "Select multiple items" "button"
++    And I click on "Select all" "link"
++    Then the field "selectquestion-3" matches value "1"
++
++    When I click on "Deselect all" "link"
++    Then the field "selectquestion-3" matches value "0"
++
+diff --git a/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes-debug.js b/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes-debug.js
+index 1c701f95a66..fb00e787445 100644
+Binary files a/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes-debug.js and b/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes-debug.js differ
+diff --git a/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes-min.js b/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes-min.js
+index 859fa0a332d..3d43f251e76 100644
+Binary files a/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes-min.js and b/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes-min.js differ
+diff --git a/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes.js b/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes.js
+index 1c701f95a66..fb00e787445 100644
+Binary files a/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes.js and b/mod/quiz/yui/build/moodle-mod_quiz-toolboxes/moodle-mod_quiz-toolboxes.js differ
+diff --git a/mod/quiz/yui/src/toolboxes/js/resource.js b/mod/quiz/yui/src/toolboxes/js/resource.js
+index d601b958c81..960745adc4a 100644
+--- a/mod/quiz/yui/src/toolboxes/js/resource.js
++++ b/mod/quiz/yui/src/toolboxes/js/resource.js
+@@ -64,6 +64,53 @@ Y.extend(RESOURCETOOLBOX, TOOLBOX, {
+         M.mod_quiz.quizbase.register_module(this);
+         Y.delegate('click', this.handle_data_action, BODY, SELECTOR.ACTIVITYACTION, this);
+         Y.delegate('click', this.handle_data_action, BODY, SELECTOR.DEPENDENCY_LINK, this);
++        this.initialise_select_multiple();
++    },
++
++    /**
++     * Initialize the select multiple options
++     *
++     * Add actions to the buttons that enable multiple slots to be selected and managed at once.
++     *
++     * @method initialise_select_multiple
++     * @protected
++     */
++    initialise_select_multiple: function() {
++
++        // Click select multiple button to show the select all options.
++        Y.one(SELECTOR.SELECTMULTIPLEBUTTON).on('click', function(e) {
++            e.preventDefault();
++            Y.one('body').addClass(CSS.SELECTMULTIPLE);
++        });
++
++        // Click cancel button to show the select all options.
++        Y.one(SELECTOR.SELECTMULTIPLECANCELBUTTON).on('click', function(e) {
++            e.preventDefault();
++            Y.one('body').removeClass(CSS.SELECTMULTIPLE);
++        });
++
++        // Click select all link to check all the checkboxes.
++        Y.one(SELECTOR.SELECTALL).on('click', function(e) {
++            e.preventDefault();
++            Y.all(SELECTOR.SELECTMULTIPLECHECKBOX).set('checked', 'checked');
++        });
++
++        // Click deselect all link to show the select all checkboxes.
++        Y.one(SELECTOR.DESELECTALL).on('click', function(e) {
++            e.preventDefault();
++            Y.all(SELECTOR.SELECTMULTIPLECHECKBOX).set('checked', '');
++        });
++
++        // Disable delete multiple button by default.
++        Y.one(SELECTOR.SELECTMULTIPLEDELETEBUTTON).setAttribute('disabled', 'disabled');
++
++        // Assign the delete method to the delete multiple button.
++        Y.delegate('click', this.delete_multiple_with_confirmation, BODY, SELECTOR.SELECTMULTIPLEDELETEBUTTON, this);
++
++        // Enable the delete all button only when at least one slot is selected.
++        Y.delegate('click', this.toggle_select_all_buttons_enabled, BODY, SELECTOR.SELECTMULTIPLECHECKBOX, this);
++        Y.delegate('click', this.toggle_select_all_buttons_enabled, BODY, SELECTOR.SELECTALL, this);
++        Y.delegate('click', this.toggle_select_all_buttons_enabled, BODY, SELECTOR.DESELECTALL, this);
+     },
+ 
+     /**
+@@ -137,6 +184,22 @@ Y.extend(RESOURCETOOLBOX, TOOLBOX, {
+     },
+ 
+     /**
++     * If a select multiple checkbox is checked enable the buttons in the select multiple
++     * toolbar otherwise disable it.
++     *
++     * @method toggle_select_all_buttons_enabled
++     */
++    toggle_select_all_buttons_enabled: function() {
++        var checked = Y.all(SELECTOR.SELECTMULTIPLECHECKBOX + ':checked');
++        var deletebutton = Y.one(SELECTOR.SELECTMULTIPLEDELETEBUTTON);
++        if (checked && !checked.isEmpty()) {
++            deletebutton.removeAttribute('disabled');
++        } else {
++            deletebutton.setAttribute('disabled', 'disabled');
++        }
++    },
++
++    /**
+      * Deletes the given activity or resource after confirmation.
+      *
+      * @protected
+@@ -185,10 +248,66 @@ Y.extend(RESOURCETOOLBOX, TOOLBOX, {
+             });
+ 
+         }, this);
+-
+-        return this;
+     },
+ 
++    /**
++     * Deletes the given activities or resources after confirmation.
++     *
++     * @protected
++     * @method delete_multiple_with_confirmation
++     * @param {EventFacade} ev The event that was fired.
++     * @chainable
++     */
++    delete_multiple_with_confirmation: function(ev) {
++        ev.preventDefault();
++
++        var ids = '';
++        var slots = [];
++        Y.all(SELECTOR.SELECTMULTIPLECHECKBOX + ':checked').each(function(node) {
++            var slot = Y.Moodle.mod_quiz.util.slot.getSlotFromComponent(node);
++            ids += ids === '' ? '' : ',';
++            ids += Y.Moodle.mod_quiz.util.slot.getId(slot);
++            slots.push(slot);
++        });
++        var element = Y.one('div.mod-quiz-edit-content');
++
++        // Do nothing if no slots are selected.
++        if (!slots || !slots.length) {
++            return;
++        }
++
++        // Create the confirmation dialogue.
++        var confirm = new M.core.confirm({
++            question: M.util.get_string('areyousureremoveselected', 'quiz'),
++            modal: true
++        });
++
++        // If it is confirmed.
++        confirm.on('complete-yes', function() {
++            var spinner = this.add_spinner(element);
++            var data = {
++                'class': 'resource',
++                field: 'deletemultiple',
++                ids: ids
++            };
++            // Delete items on server.
++            this.send_request(data, spinner, function(response) {
++                // Delete locally if deleted on server.
++                if (response.deleted) {
++                    // Actually remove the element.
++                    Y.all(SELECTOR.SELECTMULTIPLECHECKBOX + ':checked').each(function(node) {
++                        Y.Moodle.mod_quiz.util.slot.remove(node.ancestor('li.activity'));
++                    });
++                    // Update the page numbers and sections.
++                    this.reorganise_edit_page();
++
++                    // Remove the select multiple options.
++                    Y.one('body').removeClass(CSS.SELECTMULTIPLE);
++                }
++            });
++
++        }, this);
++    },
+ 
+     /**
+      * Edit the maxmark for the resource
+@@ -446,6 +565,7 @@ Y.extend(RESOURCETOOLBOX, TOOLBOX, {
+             'value': 0
+         }
+     }
++
+ });
+ 
+ M.mod_quiz.resource_toolbox = null;
+diff --git a/mod/quiz/yui/src/toolboxes/js/toolbox.js b/mod/quiz/yui/src/toolboxes/js/toolbox.js
+index 756180fdff4..f7790c4a46f 100644
+--- a/mod/quiz/yui/src/toolboxes/js/toolbox.js
++++ b/mod/quiz/yui/src/toolboxes/js/toolbox.js
+@@ -26,6 +26,7 @@ var CSS = {
+         PAGE: 'page',
+         SECTIONHIDDENCLASS: 'hidden',
+         SECTIONIDPREFIX: 'section-',
++        SELECTMULTIPLE: 'select-multiple',
+         SLOT: 'slot',
+         SHOW: 'editing_show',
+         TITLEEDITOR: 'titleeditor'
+@@ -44,6 +45,7 @@ var CSS = {
+         CONTENTAFTERLINK: 'div.contentafterlink',
+         CONTENTWITHOUTLINK: 'div.contentwithoutlink',
+         DELETESECTIONICON: 'a.editing_delete img',
++        DESELECTALL: '#questiondeselectall',
+         EDITMAXMARK: 'a.editing_maxmark',
+         EDITSECTION: 'a.editing_section',
+         EDITSECTIONICON: 'a.editing_section img',
+@@ -63,6 +65,11 @@ var CSS = {
+         SECTIONUL: 'ul.section',
+         SECTIONFORM: '.instancesectioncontainer form',
+         SECTIONINPUT: 'input[name=section]',
++        SELECTMULTIPLEBUTTON: '#selectmultiplecommand',
++        SELECTMULTIPLECANCELBUTTON: '#selectmultiplecancelcommand',
++        SELECTMULTIPLECHECKBOX: '.select-multiple-checkbox',
++        SELECTMULTIPLEDELETEBUTTON: '#selectmultipledeletecommand',
++        SELECTALL: '#questionselectall',
+         SHOW: 'a.' + CSS.SHOW,
+         SLOTLI: 'li.slot',
+         SUMMARKS: '.mod_quiz_summarks'
